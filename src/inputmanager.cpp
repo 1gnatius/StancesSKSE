@@ -106,7 +106,7 @@ STNG::EventResult STNG::InputEventListener::ProcessEvent( RE::InputEvent* const*
 
             // Stances already consumed the raw physical keycodes above.
             // Remove only Skyrim's mapped action for X ("Ready Weapon").
-            button->userEvent = RE::BSFixedString{};
+            button->SetUserEvent(RE::BSFixedString{});
 
             if (button->IsUp()) {
                 suppressGamepadXUntilRelease = false;
