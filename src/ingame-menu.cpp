@@ -1,118 +1,214 @@
-//
-// Created by styyx on 04/03/2026.
-//
+#include "ingame-menu.h"
 
+#include "formloader.h"
 #include "inputmanager.h"
 #include "Settings.h"
 
-namespace
+namespace STNG
 {
-    // SKSE/CLibUtil macro keycodes used by Stances NG:
-    // LB = 274, Gamepad X = 278.
-    constexpr std::uint32_t kLeftBumperKey = 274;
-    constexpr std::uint32_t kGamepadXKey = 278;
-    constexpr std::uint32_t kGamepadXMask = 0x4000;
-}
-
-void STNG::InputEventListener::RegisterInput()
-{
-    if (const auto manager = RE::BSInputDeviceManager::GetSingleton()) {
-        // Run before vanilla PlayerControls so we can selectively consume
-        // the mapped Ready Weapon event produced by X when LB+X is a stance combo.
-        manager->PrependEventSink(GetSingleton());
-        SKSE::log::info("[[REGISTERED]] for {}", typeid(RE::InputEvent).name());
-    }
-}
-
-void STNG::InputEventListener::SetKeys()
-{
-    using s = Config::Settings;
-    const auto i = GetSingleton();
-
-    if (!i->hotkey_neutral.SetPattern(s::neutral_stance_key.GetValue()))
+    void RegisterFUCKMenu()
     {
-        logs::error("neutral stance key set failed");
-    }
-    if (!i->hotkey_bear.SetPattern(s::bear_stance_key.GetValue()))
-    {
-        logs::error("bear stance key set failed");
+        if (FUCK::Connect()) {
+            SKSE::log::info("Connected to FUCK API");
+            FUCK::RegisterTool(&g_stanceTool);
+            SKSE::log::info("StancesNG tool registered");
+        } else {
+            SKSE::log::error("Failed to connect to FUCK API");
+        }
     }
 
-    if (!i->hotkey_hawk.SetPattern(s::hawk_stance_key.GetValue()))
+    void StanceTool::OnClose()
     {
-        logs::error("hawk stance key set failed");
+        HotkeyOnSave();
+        Config::Settings::UpdateSettings(true);
     }
 
-    if (!i->hotkey_wolf.SetPattern(s::wolf_stance_key.GetValue()))
+    void StanceTool::OnOpen()
     {
-        logs::error("wolf stance key set failed");
+        use_cycling = Config::Settings::use_cycling.GetValue();
+        apply_on_start = Config::Settings::apply_stance_on_start.GetValue();
+        play_animation = Config::Settings::play_transition_animation.GetValue();
+
+        HotkeyOnLoad();
+        RebuildFilteredIdles();
+
     }
-}
 
-void STNG::InputEventListener::ProcessStanceKey(const KeyCombination* key)
-{
-    if (!key->IsTriggered())
-        return;
-
-    const auto stanceMan = GetSingleton();
-    if (key == &stanceMan->hotkey_wolf)
+    bool StanceTool::OnAsyncInput(const void* p)
     {
-        if (StanceManager::CycleStancesPlayer())
+        if (FUCK::UpdateManagedHotkey(p, _bearKey)) return true;
+        if (FUCK::UpdateManagedHotkey(p, _wolfKey)) return true;
+        if (FUCK::UpdateManagedHotkey(p, _hawkKey)) return true;
+        if (FUCK::UpdateManagedHotkey(p, _neutralKey)) return true;
+        return false;
+    }
+
+    void StanceTool::DrawHotkeySelector()
+    {
+        FUCK::DrawManagedHotkey("Bear Stance", _bearKey);
+        UnbindHotkey("Unbind##bear", _bearKey);
+        FUCK::DrawManagedHotkey("Wolf Stance", _wolfKey);
+        UnbindHotkey("Unbind##wolf", _wolfKey);
+        FUCK::DrawManagedHotkey("Hawk Stance", _hawkKey);
+        UnbindHotkey("Unbind##hawk",_hawkKey);
+        FUCK::DrawManagedHotkey("Neutral Stance", _neutralKey);
+        UnbindHotkey("Unbind##neutral",_neutralKey);
+    }
+
+    void StanceTool::DrawBoolManipulation()
+    {
+
+            if (FUCK::Checkbox("Use Cycling", &use_cycling, false, false))
+            {
+                Config::Settings::use_cycling.SetValue(use_cycling);
+            }
+            FUCK::SameLine();
+            if (FUCK::Checkbox("Apply Stance on Start", &apply_on_start, false, false))
+            {
+                Config::Settings::apply_stance_on_start.SetValue(apply_on_start);
+            }
+
+            if (FUCK::Checkbox("Play Animation", &play_animation, false, false))
+            {
+                Config::Settings::play_transition_animation.SetValue(play_animation);
+            }
+
+
+
+    }
+
+    void StanceTool::DrawIdleSelection()
+    {
+        if (FUCK::InputText("Filter##idle", &_currentFilter))
+            RebuildFilteredIdles();
+
+        FUCK::SameLine();
+        if (FUCK::Button("Clear##idle")) {
+            _selectedIdle = nullptr;
+            Config::Settings::transition_animation_form.SetValue("");
+        }
+
+
+        FUCK::BeginChild("IdleList", ImVec2(0, 300.f), true, 0);
+
+        constexpr int kMaxDisplay = 50;
+        int displayed = 0;
+
+        for (auto* form : _filteredIdles) {
+            if (!form) continue;
+            if (displayed >= kMaxDisplay) {
+                FUCK::TextDisabled("Too many results - refine your filter...");
+                break;
+            }
+            const bool selected = (form == _selectedIdle);
+            if (FUCK::Selectable(form->GetFormEditorID(), selected)) {
+                _selectedIdle = form;
+                FormLoader::transition_animation = form;
+                Config::Settings::transition_animation_form.SetValue(form->GetFormEditorID());
+            }
+            ++displayed;
+        }
+
+        FUCK::EndChild();
+
+    }
+
+    void StanceTool::RestoreDefaultSettings()
+    {
+        using s = Config::Settings;
+        use_cycling = false;
+        s::use_cycling.SetValue(false);
+        apply_on_start = false;
+        s::apply_stance_on_start.SetValue(false);
+        play_animation = false;
+        s::play_transition_animation.SetValue(false);
+        _bearKey = KeyStringToManagedHotkey("shift+x");
+        s::bear_stance_key.SetValue("shift+x");
+        _wolfKey = KeyStringToManagedHotkey("x");
+        s::wolf_stance_key.SetValue("x");
+        _hawkKey = KeyStringToManagedHotkey("control+x");
+        s::hawk_stance_key.SetValue("control+x");
+        _neutralKey = KeyStringToManagedHotkey("alt+v");
+        s::neutral_stance_key.SetValue("alt+v");
+        _selectedIdle = nullptr;
+        s::transition_animation_form.SetValue("");
+    }
+
+    void StanceTool::RebuildFilteredIdles()
+    {
+        _filteredIdles.clear();
+
+        if (_currentFilter.empty()) {
+            _filteredIdles = FormLoader::all_game_idles;
             return;
+        }
+
+        const auto lower = clib_util::string::tolower(_currentFilter);
+        for (auto* form : FormLoader::all_game_idles) {
+            if (!form) continue;
+            const auto edid = string::tolower(std::string(form->GetFormEditorID()));
+            if (edid.contains(lower))
+                _filteredIdles.push_back(form);
+        }
     }
 
-    for(auto& [hotkey, stance] : stanceMan->keySpellCombo)
+    std::string StanceTool::ManagedHotkeyToKeyString(const FUCK::ManagedHotkey& a_hotkey)
     {
-        if (key == hotkey)
+        if (a_hotkey.kKey == 0) return "";
+
+        std::vector<std::string> parts;
+        parts.emplace_back(details::GetNameByKey(a_hotkey.kKey));
+        if (a_hotkey.kMod1 > 0) parts.emplace_back(details::GetNameByKey(static_cast<std::uint32_t>(a_hotkey.kMod1)));
+        if (a_hotkey.kMod2 > 0) parts.emplace_back(details::GetNameByKey(static_cast<std::uint32_t>(a_hotkey.kMod2)));
+
+        return string::join(parts, "+");
+    }
+
+    void StanceTool::UnbindHotkey(const char* label ,FUCK::ManagedHotkey &a_hotkey)
+    {
+        FUCK::SameLine();
+        if (FUCK::Button(label))
         {
-            StanceManager::UpdateStancePlayer(stance);
-            return;
+            a_hotkey.Clear();
         }
     }
-}
-
-STNG::EventResult STNG::InputEventListener::ProcessEvent( RE::InputEvent* const* a_event,
-                                                         RE::BSTEventSource<RE::InputEvent*>*)
-{
-    if (!a_event)
-        return EventResult::kContinue;
-
-    hotkey_neutral.Process(a_event, true);
-    const bool wolfTriggered = hotkey_wolf.Process(a_event, true);
-    hotkey_bear.Process(a_event, true);
-    hotkey_hawk.Process(a_event, true);
-
-    // Keep suppressing X until its release event has also passed through us.
-    // This prevents Ready Weapon from firing on either press or release.
-    static bool suppressGamepadXUntilRelease = false;
-
-    const auto& wolfKeys = hotkey_wolf.GetKeys();
-    const bool wolfIsLbX =
-        wolfKeys.contains(kLeftBumperKey) &&
-        wolfKeys.contains(kGamepadXKey);
-
-    if (wolfTriggered && wolfIsLbX) {
-        suppressGamepadXUntilRelease = true;
+    void StanceTool::HotkeyOnLoad()
+    {
+        _bearKey = KeyStringToManagedHotkey(Config::Settings::bear_stance_key.GetValue());
+        _wolfKey = KeyStringToManagedHotkey(Config::Settings::wolf_stance_key.GetValue());
+        _hawkKey = KeyStringToManagedHotkey(Config::Settings::hawk_stance_key.GetValue());
+        _neutralKey = KeyStringToManagedHotkey(Config::Settings::neutral_stance_key.GetValue());
     }
 
-    if (suppressGamepadXUntilRelease) {
-        for (auto event = *a_event; event; event = event->next) {
-            auto* button = event->AsButtonEvent();
-            if (!button ||
-                button->GetDevice() != RE::INPUT_DEVICE::kGamepad ||
-                button->GetIDCode() != kGamepadXMask) {
-                continue;
-            }
-
-            // Stances has already read the raw idCode. Clear only the mapped
-            // vanilla action ("Ready Weapon"), leaving the physical X input intact.
-            button->SetUserEvent(RE::BSFixedString{});
-
-            if (button->IsUp()) {
-                suppressGamepadXUntilRelease = false;
-            }
-        }
+    void StanceTool::HotkeyOnSave()
+    {
+        Config::Settings::bear_stance_key.SetValue(ManagedHotkeyToKeyString(_bearKey));
+        Config::Settings::wolf_stance_key.SetValue(ManagedHotkeyToKeyString(_wolfKey));
+        Config::Settings::hawk_stance_key.SetValue(ManagedHotkeyToKeyString(_hawkKey));
+        Config::Settings::neutral_stance_key.SetValue(ManagedHotkeyToKeyString(_neutralKey));
     }
 
-    return EventResult::kContinue;
+    FUCK::ManagedHotkey StanceTool::KeyStringToManagedHotkey(std::string_view a_str)
+    {
+        FUCK::ManagedHotkey hotkey;
+        if (a_str.empty())
+            return hotkey;
+
+        std::string str = string::tolower(a_str);
+        string::replace_all(str, " ", "");
+        string::replace_all(str, "num+", "numplus");
+
+        const auto parts = string::split(str, "+");
+        try {
+            std::vector<std::uint32_t> keys;
+            for (const auto& part : parts)
+                keys.push_back(details::GetKeyByName(part));
+
+            if (keys.size() >= 1) hotkey.kKey  = keys[0];
+            if (keys.size() >= 2) hotkey.kMod1 = static_cast<std::int32_t>(keys[1]);
+            if (keys.size() >= 3) hotkey.kMod2 = static_cast<std::int32_t>(keys[2]);
+        } catch (...){ }
+
+        return hotkey;
+    }
 }
